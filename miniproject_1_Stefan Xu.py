@@ -21,7 +21,6 @@ import numpy.linalg as la
 import pickle
 import os
 import gdown
-from sentence_transformers import SentenceTransformer
 import matplotlib.pyplot as plt
 import math
 from openai import OpenAI  # Added for OpenAI embeddings
@@ -84,9 +83,8 @@ def load_glove_embeddings_gdrive(model_type):
 
 @st.cache_resource()
 def load_sentence_transformer_model(model_name):
-    sentenceTransformer = SentenceTransformer(model_name)
-    return sentenceTransformer
-
+    from sentence_transformers import SentenceTransformer
+    return SentenceTransformer(model_name)
 
 @st.cache_resource()
 def load_openai_client():
@@ -94,7 +92,7 @@ def load_openai_client():
     Load OpenAI client (cached to avoid multiple initializations)
     Make sure to set OPENAI_API_KEY environment variable
     """
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", ""))
     if not api_key:
         st.warning("OpenAI API key not found. Please set OPENAI_API_KEY environment variable.")
         return None
@@ -220,31 +218,39 @@ def plot_piechart(sorted_cosine_scores_items):
 
 
 def plot_piechart_helper(sorted_cosine_scores_items):
+
     sorted_cosine_scores = np.array(
-        [
-            sorted_cosine_scores_items[index][1]
-            for index in range(len(sorted_cosine_scores_items))
-        ]
+        [sorted_cosine_scores_items[i][1] for i in range(len(sorted_cosine_scores_items))],
+        dtype=float
     )
+
+    sorted_cosine_scores = np.nan_to_num(sorted_cosine_scores, nan=0.0, posinf=0.0, neginf=0.0)
+
+    s = float(sorted_cosine_scores.sum())
     categories = st.session_state.categories.split(" ")
-    categories_sorted = [
-        categories[sorted_cosine_scores_items[index][0]]
-        for index in range(len(sorted_cosine_scores_items))
-    ]
+    categories_sorted = [categories[sorted_cosine_scores_items[i][0]] for i in range(len(sorted_cosine_scores_items))]
+
     fig, ax = plt.subplots(figsize=(3, 3))
+
+    if (not np.isfinite(s)) or (s <= 1e-12):
+        ax.text(0.5, 0.5, "No valid scores\n(Model unavailable / zero vectors)",
+                ha="center", va="center", fontsize=10)
+        ax.axis("off")
+        return fig
+
     my_explode = np.zeros(len(categories_sorted))
     my_explode[0] = 0.2
     if len(categories_sorted) == 3:
-        my_explode[1] = 0.1  # explode this by 0.2
+        my_explode[1] = 0.1
     elif len(categories_sorted) > 3:
         my_explode[2] = 0.05
+
     ax.pie(
         sorted_cosine_scores,
         labels=categories_sorted,
         autopct="%1.1f%%",
         explode=my_explode,
     )
-
     return fig
 
 
@@ -295,17 +301,23 @@ def plot_alatirchart(sorted_cosine_scores_models):
 
 # Task I: Compute Cosine Similarity
 def cosine_similarity(x, y):
+    # Make sure inputs are numpy float arrays
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+
     if x.shape != y.shape:
         return 0.0
-
     norm_x = np.linalg.norm(x)
     norm_y = np.linalg.norm(y)
-    if norm_x == 0 or norm_y == 0:
+
+    if (not np.isfinite(norm_x)) or (not np.isfinite(norm_y)) or norm_x == 0.0 or norm_y == 0.0:
+        return 0.0
+    cos_sim = np.dot(x, y) / (norm_x * norm_y)
+    if not np.isfinite(cos_sim):
         return 0.0
 
-    cos_sim = np.dot(x, y) / (norm_x * norm_y)
-    cos_sim = np.clip(cos_sim, -1.0, 1.0)
-    return math.exp(cos_sim)
+    cos_sim = float(np.clip(cos_sim, -1.0, 1.0))
+    return float(math.exp(cos_sim))
 
 # Task II: Average Glove Embedding Calculation
 def averaged_glove_embeddings_gdrive(sentence, word_index_dict, embeddings, model_type="50d"):
